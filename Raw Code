@@ -1,0 +1,204 @@
+Below is the code if you cannot download and/or read the code. There have been some issues with the visibility of the code/files in my repos - 
+
+# Imports for the project
+import os
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from keras.models import Sequential
+from keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Dropout
+import xml.etree.ElementTree as ET
+import tensorflow as tf
+from sklearn.preprocessing import LabelEncoder
+from tensorflow.keras import layers, models
+from tensorflow.keras.preprocessing.image import load_img, img_to_array
+from tensorflow.keras.utils import to_categorical
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Dropout
+import re
+import matplotlib.pyplot as plt
+from keras.preprocessing.image import load_img, img_to_array
+from tqdm import tqdm
+from keras.optimizers import Adam
+from keras.callbacks import ModelCheckpoint
+from tqdm.notebook import tqdm
+from sklearn.metrics import confusion_matrix, classification_report
+import seaborn as sns
+from keras.preprocessing.image import ImageDataGenerator
+import math
+from keras.callbacks import EarlyStopping
+from keras.layers import GlobalAveragePooling2D
+
+# Cell for setting up path 
+# The dataset downloads as "Archives", but I renamed it to "Stanford_Dogs_Dataset"
+dataset_path = "/Users/christianattorri/downloads/Stanford_Dogs_Dataset"
+
+data_list = []
+
+# Cell for preprocessing annotations 
+
+for folder_name in os.listdir(os.path.join(dataset_path, "annotations", "Annotation")):
+    folder_path = os.path.join(dataset_path, "annotations", "Annotation", folder_name)
+
+    if os.path.isdir(folder_path):
+        for xml_file in os.listdir(folder_path):
+            xml_path = os.path.join(folder_path, xml_file)
+
+            tree = ET.parse(xml_path)
+            root = tree.getroot()
+
+            filename = root.find("filename").text
+            breed = root.find(".//object/name").text
+            width = int(root.find(".//size/width").text)
+            height = int(root.find(".//size/height").text)
+            xmin = int(root.find(".//bndbox/xmin").text)
+            ymin = int(root.find(".//bndbox/ymin").text)
+            xmax = int(root.find(".//bndbox/xmax").text)
+            ymax = int(root.find(".//bndbox/ymax").text)
+
+            data_list.append({
+                "filename": filename,
+                "breed": breed,
+                "width": width,
+                "height": height,
+                "xmin": xmin,
+                "ymin": ymin,
+                "xmax": xmax,
+                "ymax": ymax
+            })
+
+annotations = pd.DataFrame(data_list)
+
+print(annotations.head())
+
+# Cell for preprocessing images
+
+def load_and_preprocess_images(df, images_folder, target_size=(224, 224)):
+    images = []
+    labels = []
+
+    for index, row in df.iterrows():
+        breed_name = row["breed"]
+
+        filename_unfinished = row["filename"].split('-')[0]
+        numeric_part = filename_unfinished.split('_')[0]
+
+        breed_folder = f"{numeric_part}-{breed_name.replace(' ', '_')}"
+        image_path = os.path.join(images_folder, breed_folder, row["filename"] + ".jpg")
+
+
+        try:
+            img = load_img(image_path)
+            img = img.resize(target_size)  # I resized the images because the CNN needs input of the same size
+            img_array = img_to_array(img)
+            img_array = img_array / 255.0 
+            images.append(img_array)
+            labels.append(row["breed"])
+
+            if len(images) < 3:
+                plt.imshow(img)
+                plt.title(f"Label: {row['breed']}")
+                plt.axis("off")
+                plt.show()
+        except FileNotFoundError:
+            if (numeric_part != "%s" and breed_name not in ["ottherhound", "English_foxhound", "French_bulldog"]):
+                print(f"Image not found: {image_path}")
+
+    return np.array(images), np.array(labels)
+
+
+X, y = load_and_preprocess_images(annotations , os.path.join(dataset_path, "images", "Images"))
+
+
+print("Number of images:", len(X))
+print("Image shape:", X[0].shape)
+
+# Split the data into training and validation sets
+X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# Cell For Label Encoding
+
+label_encoder = LabelEncoder()
+y_train_encoded = label_encoder.fit_transform(y_train)
+y_val_encoded = label_encoder.transform(y_val)
+
+# Cell for creating the model
+np.random.seed(42)
+
+model = Sequential()
+model.add(Conv2D(256, (3, 3), activation='relu', input_shape=(224, 224, 3)))
+model.add(MaxPooling2D((2, 2)))
+model.add(Conv2D(512, (3, 3), activation='relu'))
+model.add(MaxPooling2D((2, 2)))
+model.add(Conv2D(1024, (3, 3), activation='relu'))
+model.add(MaxPooling2D((2, 2)))
+model.add(Conv2D(2048, (3, 3), activation='relu'))
+model.add(MaxPooling2D((2, 2)))
+model.add(GlobalAveragePooling2D())
+model.add(Dense(2048, activation='relu'))
+model.add(Dropout(0.5))
+model.add(Dense(1024, activation='relu'))
+model.add(Dense(len(np.unique(y)), activation='softmax'))
+
+model.compile(optimizer=Adam(learning_rate=0.00001), loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+
+
+# Cell for Image Data Generator
+
+datagen = ImageDataGenerator(
+    rotation_range=45,
+    width_shift_range=0.3,
+    height_shift_range=0.3,
+    shear_range=0.3,
+    zoom_range=0.3,
+    horizontal_flip=True,
+    fill_mode='nearest'
+)
+
+# Cell For Training the Model
+
+max_batches_display = len(X_train) 
+max_batches_process = len(X_train)
+early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
+batch_size = 32
+epochs = 20  
+best_val_loss = float("inf")
+
+for epoch in range(epochs):
+    print(f"Epoch {epoch + 1}/{epochs}")
+    with tqdm(total=min(max_batches_display, len(X_train)), unit='batch') as pbar:
+        steps_per_epoch = min(max_batches_process, math.ceil(len(X_train) / batch_size))
+        for _ in range(steps_per_epoch):
+            batch_X, batch_y = next(datagen.flow(X_train, y_train_encoded, batch_size=batch_size))
+            model.train_on_batch(batch_X, batch_y)
+            pbar.update(1)
+    val_loss, val_acc = model.evaluate(X_val, y_val_encoded, verbose=0)
+    print(f"Validation Accuracy: {val_acc:.4f}")
+    print(f"Validation Loss: {val_loss:.4f}")
+    if val_loss < best_val_loss:
+        best_val_loss = val_loss
+    else:
+        print("Validation loss did not improve. Stopping training.")
+        break
+
+
+# Confusion Matrix Cell
+y_val_pred = model.predict(X_val)
+y_val_pred_classes = np.argmax(y_val_pred, axis=1)
+
+
+conf_mat = confusion_matrix(y_val_encoded, y_val_pred_classes)
+plt.figure(figsize=(8, 6))
+sns.heatmap(conf_mat, annot=True, fmt='d', cmap='Blues', xticklabels=label_encoder.classes_, yticklabels=label_encoder.classes_)
+plt.title('Confusion Matrix')
+plt.xlabel('Predicted')
+plt.ylabel('True')
+plt.show()
+
+# Classification Report
+print("Classification Report:")
+print(classification_report(y_val_encoded, y_val_pred_classes, target_names=label_encoder.classes_))
+
+# Cell for Final Evaluation on Test Set
+test_loss, test_acc = model.evaluate(X_test, y_test, verbose=0)
+print(f"Test Accuracy: {test_acc:.4f}")
